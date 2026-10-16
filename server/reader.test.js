@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { listRuns, getRun, getAgents, getScript, saveAsWorkflow, encodeCwd, parseTranscriptTail, parsePhases, parseMetaDescription, deriveTitle, parseAgentLabels, matchLabel, getLiveAgents } from './reader.js'
+import { listRuns, getRun, getAgents, getScript, saveAsWorkflow, encodeCwd, parseTranscriptTail, parsePhases, parseMetaDescription, deriveTitle, parseAgentLabels, matchLabel, getLiveAgents, readAgentResult } from './reader.js'
 
 let root, projectsDir, cwdA, cwdB
 const now = Date.now()
@@ -473,4 +473,25 @@ test('deriveTitle strips ownership boilerplate', () => {
   const t = deriveTitle(null, 'You own EXACTLY server/reader.js in the repo. Add resultSections to getRun for panel rendering.')
   assert.ok(t && !/^you own/i.test(t), t)
   assert.ok(/resultSections|Add/i.test(t), t)
+})
+
+test('readAgentResult: final StructuredOutput wins, else last text; tidied; null when absent', async () => {
+  const structured = await write(path.join(root, 'result', 'agent-r1.jsonl'), [
+    asstLine(T1, [{ type: 'text', text: 'Reading the draft.' }], 5),
+    toolResultLine(T2),
+    asstLine(T3, [{ type: 'tool_use', name: 'StructuredOutput', input: { handoff: 'S0 done; next designer', path: path.join(os.homedir(), 'x.md') } }], 9),
+  ].join('\n') + '\n')
+  const r = await readAgentResult(structured)
+  assert.equal(JSON.parse(r).handoff, 'S0 done; next designer')
+  assert.ok(!r.includes(os.homedir()), 'home path tidied')
+
+  const texty = await write(path.join(root, 'result', 'agent-r2.jsonl'), [
+    asstLine(T1, [{ type: 'text', text: 'first' }], 5),
+    asstLine(T3, [{ type: 'text', text: '## Proposal drafted' }, { type: 'tool_use', name: 'Read', input: {} }], 9),
+  ].join('\n') + '\n')
+  assert.equal(await readAgentResult(texty), '## Proposal drafted')
+
+  const none = await write(path.join(root, 'result', 'agent-r3.jsonl'), toolResultLine(T1) + '\n')
+  assert.equal(await readAgentResult(none), null)
+  assert.equal(await readAgentResult(path.join(root, 'result', 'missing.jsonl')), null)
 })

@@ -782,6 +782,41 @@ export async function readAgentType(transcriptPath) {
   return t
 }
 
+// What the agent produced: its final StructuredOutput call (structured
+// workflow agents end with one) or else its last text block. The record's
+// resultPreview is capped at ~400 chars, so the transcript is the better
+// source. Reads only the tail; returns tidied text or null.
+export async function readAgentResult(filePath, { maxBytes = 262144, maxChars = 4000 } = {}) {
+  if (!filePath) return null
+  let fh = null, text
+  try {
+    fh = await fs.open(filePath, 'r')
+    const st = await fh.stat()
+    const offset = Math.max(0, st.size - maxBytes)
+    const buf = Buffer.alloc(st.size - offset)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, offset)
+    text = buf.subarray(0, bytesRead).toString('utf8')
+  } catch {
+    return null
+  } finally {
+    if (fh) await fh.close().catch(() => {})
+  }
+  let structured = null, lastText = null
+  for (const seg of text.split('\n')) {
+    if (!seg.includes('"assistant"')) continue
+    let line
+    try { line = JSON.parse(seg) } catch { continue }   // leading partial / torn line
+    if (line?.type !== 'assistant' || !Array.isArray(line.message?.content)) continue
+    for (const b of line.message.content) {
+      if (b?.type === 'tool_use' && b.name === 'StructuredOutput') {
+        try { structured = JSON.stringify(b.input) } catch { /* unserializable */ }
+      } else if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) lastText = b.text
+    }
+  }
+  const out = structured ?? lastText
+  return out ? tidy(out).slice(0, maxChars) : null
+}
+
 // The agent's goal: its task prompt is the FIRST line of its transcript
 // (type:user). Read only the head of the file — transcripts grow large.
 export async function readTranscriptPrompt(filePath, { maxBytes = 32768, maxChars = 4000 } = {}) {
