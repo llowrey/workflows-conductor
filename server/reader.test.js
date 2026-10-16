@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { listRuns, getRun, getAgents, getScript, saveAsWorkflow, encodeCwd, parseTranscriptTail, parsePhases, parseMetaDescription, deriveTitle, parseAgentLabels, matchLabel, getLiveAgents, readTranscriptStats } from './reader.js'
+import { listRuns, getRun, getAgents, getScript, saveAsWorkflow, encodeCwd, parseTranscriptTail, parsePhases, parseMetaDescription, deriveTitle, parseAgentLabels, matchLabel, getLiveAgents, readTranscriptStats, readAgentResult } from './reader.js'
 import { estimateCost } from './pricing.js'
 
 let root, projectsDir, cwdA, cwdB
@@ -542,4 +542,25 @@ test('estimateCost: list prices, cache multipliers, fast/long tiers, unpriced mo
   const o = await estimateCost([b('claude-mystery-9', 'standard', { output: 1e6 }), b('claude-sonnet-5-5', 'standard', { output: 1e6, input: 1e6 })], { dataDir })
   close(o.usd, 3 + 12 + 2)
   assert.deepEqual(o.unpriced, [])
+})
+
+test('readAgentResult: final StructuredOutput wins, else last text; tidied; null when absent', async () => {
+  const structured = await write(path.join(root, 'result', 'agent-r1.jsonl'), [
+    asstLine(T1, [{ type: 'text', text: 'Reading the draft.' }], 5),
+    toolResultLine(T2),
+    asstLine(T3, [{ type: 'tool_use', name: 'StructuredOutput', input: { handoff: 'S0 done; next designer', path: path.join(os.homedir(), 'x.md') } }], 9),
+  ].join('\n') + '\n')
+  const r = await readAgentResult(structured)
+  assert.equal(JSON.parse(r).handoff, 'S0 done; next designer')
+  assert.ok(!r.includes(os.homedir()), 'home path tidied')
+
+  const texty = await write(path.join(root, 'result', 'agent-r2.jsonl'), [
+    asstLine(T1, [{ type: 'text', text: 'first' }], 5),
+    asstLine(T3, [{ type: 'text', text: '## Proposal drafted' }, { type: 'tool_use', name: 'Read', input: {} }], 9),
+  ].join('\n') + '\n')
+  assert.equal(await readAgentResult(texty), '## Proposal drafted')
+
+  const none = await write(path.join(root, 'result', 'agent-r3.jsonl'), toolResultLine(T1) + '\n')
+  assert.equal(await readAgentResult(none), null)
+  assert.equal(await readAgentResult(path.join(root, 'result', 'missing.jsonl')), null)
 })
